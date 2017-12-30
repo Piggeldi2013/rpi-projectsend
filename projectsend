@@ -1,0 +1,140 @@
+#!/bin/bash
+
+# Script for (initial) setup of the rpi-projectsend container.
+# It should also move settings and uploads in case they haven't
+# been mounted externally on first start.
+
+# All values might be set by using the -e switch on docker run.
+# If set externally, they will *NOT* be validated in any means.
+# The container will set up *without* any changes.
+
+# Check variables. Set initial values if none set
+
+# VOLUME_PATH - the one path that can be mounted in Docker to
+# 		have configuration, database and uploads external
+if [ -z "${VOLUME_PATH}" ]; then
+	VOLUME_PATH=/projectsenddata
+fi
+
+# CONFIG_PATH - the path where the projecsend initial setup is
+# 		located at
+if [ -z "${CONFIG_PATH}" ]; then
+	CONFIG_PATH="${VOLUME_PATH}/config"
+fi
+
+# UPLOAD_PATH - the path where the uploaded data in projectsend resides
+if [ -z "${UPLOAD_PATH}" ]; then
+	UPLOAD_PATH="${VOLUME_PATH}/data/upload"
+fi
+
+# DATABASE_PATH - the path where the database saves it's data to
+if [ -z "${DATABASE_PATH}" ]; then
+	DATABASE_PATH="${VOLUME_PATH}/data/database"
+fi
+
+# Database config
+
+# MYSQL_ROOT_PASSWORD - the password that will be set for the root user on
+# 			initial start / it should be set externally by
+#			using the -e switch! (It is set anyway to a
+#			default value)
+if [ -z "${MYSQL_ROOT_PASSWORD}"]; then
+	MYSQL_ROOT_PASSWORD=root
+fi
+
+# MYSQL_USER - the username that will be used (and created on first start)
+if [ -z "${MYSQL_USER}"]; then
+	MYSQL_USER=projectsenduser
+fi
+
+# MYSQL_PASSWORD - the password that will be used (and set on first start)
+if [ -z "${MYSQL_PASSWORD}"]; then
+	MYSQL_PASSWORD=projectsendpw
+fi
+
+# MYSQL_DATABASE - the database that will be used (and created on first
+#		   start)
+if [ -z "${MYSQL_DATABASE}"]; then
+	MYSQL_DATABASE=projectsend
+fi
+
+# Export MySQL config, as it is used at the rpi-mariadb part for
+# initializing the database
+export MYSQL_ROOT_PASSWORD
+export MYSQL_USER
+export MYSQL_PASSWORD
+export MYSQL_DATABASE
+
+# Check the setup - Do initial setup on first start
+
+# Check for volume path
+if [ ! -d "${VOLUME_PATH}" ]; then
+	mkdir -p "${VOLUME_PATH}"
+fi
+
+# Projectsend config
+if [ ! -d "${CONFIG_PATH}" ]; then
+	mkdir -p "${CONFIG_PATH}"
+	chown -R www-data:www-data "${CONFIG_PATH}"
+fi
+# Check and setup projectsend config, if it isn't set already
+if [ ! -f "/config/sys.config.php" ]; then
+	cp /var/www/html/includes/sys.config.sample.php "${CONFIG_PATH}/sys.config.php"
+	chown www-data:www-data "${CONFIG_PATH}/sys.config.php"
+	# Change the config
+	sed -i s/\'database\'/\'"${MYSQL_DATABASE}"\'/g "${CONFIG_PATH}/sys.config.php"
+	sed -i s/\'username\'/\'"${MYSQL_USER}"\'/g "${CONFIG_PATH}/sys.config.php"
+	sed -i s/\'password\'/\'"${MYSQL_PASSWORD}"\'/g "${CONFIG_PATH}/sys.config.php"
+fi
+# Check if the symbolic link to the setup exists - redo if it isn't there
+if [ ! -L "/var/www/html/includes/sys.config.php" ]; then
+	ln -s "${CONFIG_PATH}/sys.config.php" /var/www/html/includes/sys.config.php
+	chown www-data:www-data /var/www/html/includes/sys.config.php
+fi
+
+# Check and setup the Upload path
+if [ ! -d "${UPLOAD_PATH}" ]; then
+	mkdir -p "${UPLOAD_PATH}"
+	chown -R www-data:www-data "${UPLOAD_PATH}"
+fi
+# Check the upload path - move it's content, if there is some
+if [ -d "/var/www/html/upload" ]; then
+	mv -r /var/www/html/upload "${UPLOAD_PATH}"
+	rm -rf /var/www/html/upload
+fi
+# Check if the symbolic link to the upload exists - redo if it isn't there
+if [ ! -L "/var/www/html/upload" ]; then
+	ln -s "${UPLOAD_PATH}" /var/www/html/upload
+	chown -R www-data:www-data /var/www/html/upload
+fi
+
+# Check and setup the database path
+if [ ! -d "${DATABASE_PATH}" ]; then
+	mkdir -p "${DATABASE_PATH}"
+	chown -R mysql:mysql "${DATABASE_PATH}"
+fi
+# Check if mysql data must be moved, move it, and create symbolic link
+if [ ! -L "/var/lib/mysql" ]; then
+	if [ "$(ls -A /var/lib/mysql/)" ]; then
+		mv -r /var/lib/mysql/* "${DATABASE_PATH}"
+	fi
+	if [ -d "/var/lib/mysql" ]; then
+		rm -rf /var/lib/mysql
+	fi
+	ln -s "${DATABASE_PATH}" /var/lib/mysql
+	chown -R mysql:mysql /var/lib/mysql
+fi
+
+# Setup complete - start the server
+
+# Start the apache2 as a service - this is a workaround, as
+# -DFOREGROUND option doesn't work at the moment (apache quits on first
+# serve of a web page)
+service apache2 start
+
+# Start initializing the database if needed, and/or just start it
+# The script is coming from rpi-mariadb
+/entrypoint.sh mysqld
+
+
+
